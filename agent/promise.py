@@ -4,8 +4,8 @@ The agent takes a free-form `context` blob (the more the better: offer, target,
 pain, dream outcome, mechanism, proof, constraints) and an optional `references`
 blob (structures or example headlines the operator wants the agent to learn from).
 
-Output: a list of `Promise` objects, each with the headline plus the structural
-pattern used, the rhetorical levers pulled, and a short rationale.
+Output: a list of `Promise` objects, each with the four-layer structure plus
+the rhetorical levers pulled and a short rationale.
 
 Hormozi's Value Equation drives the system prompt:
     Value = (Dream Outcome × Perceived Likelihood) / (Time Delay × Effort & Sacrifice)
@@ -26,20 +26,25 @@ MAX_HEADLINES = 25
 
 @dataclass(frozen=True)
 class Promise:
-    """A three-layer promise.
+    """A four-layer promise.
 
-    Layout rules (enforced via the system prompt):
-      - `headline` is ALWAYS present.
-      - At least ONE of `pre_headline` / `sub_headline` is present.
-      - You may drop pre OR sub, but never both.
+    All four layers are MANDATORY. None of them can be empty.
 
     Roles:
-      - `pre_headline`: profila il target (a chi parli, in che situazione)
-      - `headline`: esplode il beneficio (numeri, tempo, outcome specifico)
-      - `sub_headline`: esplode il beneficio con dettaglio (meccanismo, garanzia, anti-sacrificio)
+      - `pre_headline`: qualifica il target (a chi parli, in che situazione)
+      - `usp_name`:     NOME U.S.P. — etichetta-marchio brevissima, memorabile,
+                        spesso ALL CAPS (es. "LIBERI COL MATTONE",
+                        "IMPRENDITOR.I.A."). Non e` una descrizione, e` un brand
+                        del metodo/offerta.
+      - `headline`:     la promessa nuda — esplode il beneficio (outcome, numeri,
+                        tempo)
+      - `sub_headline`: corta (max ~90 caratteri), serve SOLO a disinnescare le
+                        obiezioni che vengono in mente leggendo la promessa.
+                        Non aggiunge benefit nuovi, non rispiega la promessa.
     """
 
     pre_headline: str
+    usp_name: str
     headline: str
     sub_headline: str
     structure: str
@@ -51,23 +56,31 @@ SYSTEM_PROMPT = (
     "Sei lo headline writer di Alex Hormozi. Scrivi promesse 'Grand Slam Offer' "
     "in italiano, calibrate sulla Value Equation:\n"
     "    Value = (Dream Outcome x Perceived Likelihood) / (Time Delay x Effort & Sacrifice)\n\n"
-    "## STRUTTURA OBBLIGATORIA — TRITTICO\n"
-    "Ogni promessa e un trittico a TRE livelli:\n"
-    "  1. PRE-HEADLINE -> profila il TARGET. Chi sta leggendo? In che situazione? "
-    "Es. 'A te coach 1-1 che vendi ancora a chiamata fredda', "
-    "'Per imprenditori 35-55 che hanno provato Meta Ads e si sono bruciati'.\n"
-    "  2. HEADLINE -> esplode il BENEFICIO principale. Numeri, tempo, outcome "
-    "specifico. Questa e la promessa nuda. Es. 'Riempi l'agenda di 5 nuovi clienti "
-    "al mese in 90 giorni'.\n"
-    "  3. SUB-HEADLINE -> esplode il beneficio con DETTAGLIO. Meccanismo, garanzia, "
-    "anti-sacrificio, prova. Es. 'Senza chiamate fredde, senza ads, anche se non "
-    "hai una community — o ti rimborso fino all'ultimo centesimo'.\n\n"
+    "## STRUTTURA OBBLIGATORIA — QUATTRO LIVELLI\n"
+    "Ogni promessa e composta da QUATTRO livelli, TUTTI obbligatori, in questo ordine:\n\n"
+    "  1. PRE-HEADLINE -> qualifica il TARGET. Chi sta leggendo? In che situazione?\n"
+    "     Es. 'A te coach 1-1 che vendi ancora a chiamata fredda',\n"
+    "         'Per imprenditori 35-55 che hanno provato Meta Ads e si sono bruciati'.\n\n"
+    "  2. USP-NAME -> il NOME U.S.P. dell'offerta. Un'etichetta-marchio brevissima\n"
+    "     (1-4 parole, spesso ALL CAPS) che riassume tutta l'offerta in un'espressione\n"
+    "     memorabile, come fosse il 'nome commerciale' del metodo. Punta a ritmo,\n"
+    "     allitterazione, gioco di parole, doppi sensi, contrasto.\n"
+    "     Es. 'LIBERI COL MATTONE', 'IMPRENDITOR.I.A.', 'MOLLA O RADDOPPIA',\n"
+    "         'FUORI DAL TEMPO', 'IL MATTONE INTELLIGENTE'.\n"
+    "     NON e una descrizione. NON usare punteggiatura standard a meno che non\n"
+    "     sia parte di un gioco grafico (come gli intercalari di IMPRENDITOR.I.A.).\n\n"
+    "  3. HEADLINE -> la PROMESSA nuda. Esplode il beneficio: numeri, tempo,\n"
+    "     outcome specifico. Es. 'Riempi l'agenda di 5 nuovi clienti al mese in 90 giorni'.\n\n"
+    "  4. SUB-HEADLINE -> CORTA (target: max ~90 caratteri). Serve SOLO a\n"
+    "     disinnescare le obiezioni che vengono in mente subito dopo aver letto\n"
+    "     la promessa. NON aggiungere benefit nuovi, NON rispiegare la promessa,\n"
+    "     NON elencare meccanismi: togli SOLO il dubbio.\n"
+    "     Es. 'Senza ads, senza chiamate fredde', 'Anche se parti da zero',\n"
+    "         'Anche se hai gia provato e fallito', 'Anche se non sei tecnico'.\n\n"
     "REGOLA FERREA:\n"
-    "  - HEADLINE e SEMPRE obbligatoria, mai vuota.\n"
-    "  - Devi includere ALMENO UNA tra pre_headline e sub_headline.\n"
-    "  - Puoi saltare la pre, oppure puoi saltare la sub, MAI ENTRAMBE.\n"
-    "  - Varia tra le N promesse: alcune con tutti e 3 i livelli, alcune pre+headline, "
-    "alcune headline+sub.\n\n"
+    "  - Tutti e 4 i livelli sono SEMPRE presenti e mai vuoti.\n"
+    "  - Se ti manca materiale dal context per uno dei 4, inventalo dentro lo\n"
+    "    spirito del context — meglio una promessa completa che un trittico monco.\n\n"
     "## VALUE EQUATION\n"
     "Massimizza numeratore, minimizza denominatore:\n"
     "  - DREAM OUTCOME: risultato specifico e desiderabile (numeri, mai benefit vaghi)\n"
@@ -85,21 +98,25 @@ SYSTEM_PROMPT = (
     "  - weasel words: potresti, forse, magari, eventualmente\n"
     "  - feature senza payoff ('pacchetti', 'soluzioni', 'sistemi' generici)\n"
     "  - superlativi non quantificati ('il migliore', 'il piu efficace')\n"
-    "  - claim non supportati dal context (mai numeri inventati)\n\n"
+    "  - claim non supportati dal context (mai numeri inventati per la HEADLINE)\n"
+    "  - sub-headline lunghe o che ripetono la promessa\n"
+    "  - usp-name descrittivi tipo 'METODO MARKETING DIGITALE' — sono morti\n\n"
     "## OBBLIGATORIO\n"
     "  - numeri, date, nomi specifici quando il context li fornisce\n"
     "  - tono diretto 'tu/tuo', mai 'voi' o 'lei'\n"
     "  - parole della lingua del prospect (riprendi i pain literali dal context)\n"
-    "  - varieta di leve: non fare 10 promesse tutte basate sul tempo\n\n"
+    "  - varieta di leve: non fare 10 promesse tutte basate sul tempo\n"
+    "  - varieta di usp-name: non fare 10 nomi tutti con lo stesso pattern\n\n"
     "## OUTPUT\n"
     "Rispondi SOLO con un array JSON, niente prosa, niente markdown fences.\n"
     "Schema di ogni elemento:\n"
-    '  {"pre_headline": "stringa (puo essere vuota se sub e presente)",\n'
-    '   "headline": "stringa NON vuota — il titolo principale",\n'
-    '   "sub_headline": "stringa (puo essere vuota se pre e presente)",\n'
-    '   "structure": "etichetta dei livelli usati e del pattern es. PRE+HEADLINE+SUB / Outcome+Tempo+Anti-sacrificio",\n'
-    '   "levers": ["specificity", "time-bound", "objection-removal", ...],\n'
-    '   "rationale": "perche questa promessa funziona su questo target (max 200 char)"}\n'
+    '  {"pre_headline": "stringa NON vuota — qualifica il target",\n'
+    '   "usp_name":     "stringa NON vuota — etichetta-marchio breve",\n'
+    '   "headline":     "stringa NON vuota — la promessa nuda",\n'
+    '   "sub_headline": "stringa NON vuota — anti-obiezione corta",\n'
+    '   "structure":    "etichetta del pattern es. Outcome+Tempo+Anti-sacrificio",\n'
+    '   "levers":       ["specificity", "time-bound", "objection-removal", ...],\n'
+    '   "rationale":    "perche funziona su questo target (max 200 char)"}\n'
 )
 
 
@@ -143,7 +160,9 @@ def _build_user_prompt(
     parts.append(
         f"\n## Task\n"
         f"Scrivi esattamente {n_headlines} headline-promesse, ognuna con una leva "
-        f"diversa o un pattern strutturale diverso. Restituisci solo l'array JSON.\n"
+        f"diversa o un pattern strutturale diverso. Ogni promessa deve avere TUTTI "
+        f"e 4 i livelli (pre_headline, usp_name, headline, sub_headline) compilati "
+        f"e non vuoti. Restituisci solo l'array JSON.\n"
     )
     return "".join(p for p in parts if p)
 
@@ -151,19 +170,17 @@ def _build_user_prompt(
 def _parse_promises(raw_items: list[dict]) -> list[Promise]:
     """Parse JSON items into `Promise` objects.
 
-    Filters out items where:
-      - `headline` is missing/blank, OR
-      - both `pre_headline` and `sub_headline` are blank (the trio rule).
+    All four fields (pre_headline, usp_name, headline, sub_headline) must be
+    present and non-blank. Items missing any of the four are filtered out.
     """
     promises: list[Promise] = []
     for item in raw_items:
-        headline = str(item.get("headline", "")).strip()
-        if not headline:
-            continue
         pre = str(item.get("pre_headline", "")).strip()
+        usp = str(item.get("usp_name", "")).strip()
+        headline = str(item.get("headline", "")).strip()
         sub = str(item.get("sub_headline", "")).strip()
-        # Enforce the trio rule: at least one of pre/sub must be present.
-        if not pre and not sub:
+        # Strict: every layer must be present.
+        if not pre or not usp or not headline or not sub:
             continue
         levers_raw = item.get("levers", []) or []
         if isinstance(levers_raw, str):
@@ -172,6 +189,7 @@ def _parse_promises(raw_items: list[dict]) -> list[Promise]:
         promises.append(
             Promise(
                 pre_headline=pre,
+                usp_name=usp,
                 headline=headline,
                 sub_headline=sub,
                 structure=str(item.get("structure", "")).strip(),
@@ -253,22 +271,22 @@ def regenerate_one(
     if not feedback.strip():
         raise ValueError("feedback is required to regenerate a promise")
 
-    original_block_lines = []
-    if original.pre_headline:
-        original_block_lines.append(f"  PRE: {original.pre_headline}")
-    original_block_lines.append(f"  HEADLINE: {original.headline}")
-    if original.sub_headline:
-        original_block_lines.append(f"  SUB: {original.sub_headline}")
-    original_block = "\n".join(original_block_lines)
+    original_block = (
+        f"  PRE:      {original.pre_headline}\n"
+        f"  USP NAME: {original.usp_name}\n"
+        f"  HEADLINE: {original.headline}\n"
+        f"  SUB:      {original.sub_headline}"
+    )
 
     instructions = (
-        "Stai riscrivendo UNA singola promessa-trittico. Versione originale:\n"
+        "Stai riscrivendo UNA singola promessa-quaternio. Versione originale:\n"
         f"{original_block}\n"
         f"  (struttura: {original.structure}; leve: {', '.join(original.levers)})\n\n"
         "Feedback dell'operatore su cosa cambiare:\n"
         f"  {feedback.strip()}\n\n"
-        "Restituisci un array JSON con UN SOLO elemento (la nuova promessa-trittico). "
-        "Rispetta la regola: headline obbligatoria + almeno una tra pre_headline e sub_headline."
+        "Restituisci un array JSON con UN SOLO elemento (la nuova promessa-quaternio). "
+        "Rispetta la regola: tutti e 4 i livelli (pre_headline, usp_name, headline, "
+        "sub_headline) sono obbligatori e non vuoti."
     )
     user_prompt = _build_user_prompt(
         context=context,

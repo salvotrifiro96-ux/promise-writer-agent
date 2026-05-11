@@ -122,9 +122,13 @@ def _main(sidebar: dict[str, str]) -> None:
     st.title("🪄 Promise Writer Agent")
     st.caption(
         "Copywriter specializzato in **promesse Hormozi-style**, sempre strutturate a "
-        "trittico: **Pre-headline** (profila il target) → **Headline** (esplode il "
-        "beneficio) → **Sub-headline** (lo amplifica con meccanismo/garanzia/anti-sacrificio). "
-        "Si puo saltare la pre o la sub, ma due livelli ci sono sempre."
+        "**quattro livelli**:\n\n"
+        "**1. Pre-headline** (qualifica il target) → "
+        "**2. Nome U.S.P.** (etichetta-marchio breve e memorabile tipo *LIBERI COL MATTONE* o "
+        "*IMPRENDITOR.I.A.*) → "
+        "**3. Promessa** (esplode il beneficio) → "
+        "**4. Sub-headline** (corta, solo anti-obiezione). "
+        "Tutti e 4 sempre presenti."
     )
 
     if st.session_state.promises is None:
@@ -141,23 +145,26 @@ def _input_form(sidebar: dict[str, str]) -> None:
             height=320,
             placeholder=(
                 "Carica qui TUTTO quello che hai. Piu dai, meglio scrive. Mappa di cosa "
-                "alimenta cosa nel trittico:\n\n"
+                "alimenta cosa nei 4 livelli:\n\n"
                 "→ ALIMENTA LA PRE-HEADLINE (chi e il target, in che situazione):\n"
                 "  • Chi e il prospect (eta, ruolo, contesto, livello di awareness)\n"
                 "  • Cosa ha gia provato e fallito\n"
                 "  • Frustrazione attuale (le parole esatte che usa)\n\n"
-                "→ ALIMENTA LA HEADLINE (il beneficio nudo):\n"
+                "→ ALIMENTA IL NOME U.S.P. (etichetta-marchio del metodo):\n"
+                "  • Parole chiave del settore, mondo del prospect (es. mattone, agenda, ads)\n"
+                "  • Concetti opposti o paradossi che vorresti esprimere (es. 'libero ma stabile')\n"
+                "  • Eventuali nomi a cui sei gia affezionato (li uso come riferimento o ne propongo altri)\n\n"
+                "→ ALIMENTA LA HEADLINE (la promessa nuda):\n"
                 "  • Cosa vendi (prodotto/servizio in 2-3 righe)\n"
                 "  • Dream outcome (numeri, KPI, sensazioni concrete)\n"
                 "  • Tempo realistico per il risultato\n\n"
-                "→ ALIMENTA LA SUB-HEADLINE (dettaglio + credibilita):\n"
-                "  • Meccanismo unico (come ottieni il risultato — la 'salsa segreta')\n"
-                "  • Prove (case study, testimonianze, numeri reali)\n"
-                "  • Garanzia (se ne hai una)\n"
-                "  • Anti-sacrifici ('senza chiamate fredde', 'anche se parti da zero')\n\n"
-                "→ VINCOLI:\n"
-                "  • Obiezioni tipiche del prospect\n"
-                "  • Cosa NON dire (claim non sostenibili, competitor da non citare)"
+                "→ ALIMENTA LA SUB-HEADLINE (anti-obiezione corta):\n"
+                "  • Obiezioni tipiche del prospect quando legge promesse cosi\n"
+                "    (es. 'sara per chi parte gia avanti', 'serve essere tecnici',\n"
+                "    'mi tocca fare chiamate fredde', 'costera un sacco')\n\n"
+                "→ VINCOLI / CONTESTO:\n"
+                "  • Cosa NON dire (claim non sostenibili, competitor da non citare)\n"
+                "  • Eventuali prove/case study/testimonianze (informativi, non vanno in sub)"
             ),
             help=(
                 "Questo blob va dritto nel prompt. Non riassumere — meglio rumoroso ma completo "
@@ -250,9 +257,17 @@ def _output_panel(sidebar: dict[str, str]) -> None:
             st.markdown(f"**Promessa #{i + 1}**")
             if p.pre_headline:
                 st.caption(f"_{p.pre_headline}_")
+            if p.usp_name:
+                st.markdown(
+                    f"<div style='font-size:1.5rem; font-weight:800; "
+                    f"letter-spacing:0.05em; color:#16a34a; "
+                    f"margin: 0.2rem 0 0.4rem 0;'>"
+                    f"{p.usp_name}</div>",
+                    unsafe_allow_html=True,
+                )
             st.markdown(f"### {p.headline}")
             if p.sub_headline:
-                st.markdown(p.sub_headline)
+                st.markdown(f"_{p.sub_headline}_")
             st.markdown("")  # spacing
             meta_cols = st.columns([2, 3])
             with meta_cols[0]:

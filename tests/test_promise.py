@@ -17,6 +17,21 @@ from agent.promise import (
 )
 
 
+def _valid_raw(**overrides):
+    """A baseline raw dict that satisfies the 4-layer rule. Tests override one field."""
+    base = {
+        "pre_headline": "A te coach 1-1 che vendi a chiamata fredda",
+        "usp_name": "AGENDA FULL",
+        "headline": "Riempi l'agenda di 5 nuovi clienti al mese in 90 giorni",
+        "sub_headline": "Senza ads, senza chiamate fredde.",
+        "structure": "Outcome+Tempo+Anti-sacrificio",
+        "levers": ["specificity", "time-bound", "objection-removal"],
+        "rationale": "Tocca outcome misurabile, tempo e rimozione del pain piu odiato.",
+    }
+    base.update(overrides)
+    return base
+
+
 # ── _section ──────────────────────────────────────────────────────
 @pytest.mark.unit
 def test_section_returns_empty_for_blank_body():
@@ -60,125 +75,93 @@ def test_extract_json_array_invalid_raises():
 
 # ── _parse_promises ───────────────────────────────────────────────
 @pytest.mark.unit
-def test_parse_promises_full_trio():
-    raw = [
-        {
-            "pre_headline": "A te coach 1-1 che vendi a chiamata fredda",
-            "headline": "Riempi l'agenda di 5 nuovi clienti al mese in 90 giorni",
-            "sub_headline": "Senza ads, senza chiamate fredde, o ti rimborso",
-            "structure": "PRE+HEADLINE+SUB / Outcome+Tempo+Anti-sacrificio",
-            "levers": ["specificity", "time-bound", "objection-removal"],
-            "rationale": "Tocca outcome misurabile, tempo e rimozione del pain piu odiato.",
-        }
-    ]
-    out = _parse_promises(raw)
+def test_parse_promises_full_quaternary():
+    out = _parse_promises([_valid_raw()])
     assert len(out) == 1
     p = out[0]
     assert isinstance(p, Promise)
     assert p.pre_headline.startswith("A te coach")
+    assert p.usp_name == "AGENDA FULL"
     assert p.headline.startswith("Riempi")
     assert p.sub_headline.startswith("Senza")
-    assert p.structure.startswith("PRE+HEADLINE+SUB")
+    assert p.structure == "Outcome+Tempo+Anti-sacrificio"
     assert p.levers == ("specificity", "time-bound", "objection-removal")
 
 
 @pytest.mark.unit
-def test_parse_promises_pre_plus_headline_no_sub():
-    raw = [
-        {
-            "pre_headline": "Per imprenditori 35-55 che si sono bruciati con Meta Ads",
-            "headline": "5 lead caldi al giorno con €30 di budget",
-            "sub_headline": "",
-        }
-    ]
-    out = _parse_promises(raw)
-    assert len(out) == 1
-    assert out[0].pre_headline != ""
-    assert out[0].sub_headline == ""
+@pytest.mark.parametrize(
+    "missing_field",
+    ["pre_headline", "usp_name", "headline", "sub_headline"],
+)
+def test_parse_promises_rejects_blank_required_field(missing_field):
+    raw = _valid_raw(**{missing_field: ""})
+    assert _parse_promises([raw]) == []
 
 
 @pytest.mark.unit
-def test_parse_promises_headline_plus_sub_no_pre():
-    raw = [
-        {
-            "pre_headline": "",
-            "headline": "Da 0 a 10K follower in 90 giorni",
-            "sub_headline": "Anche se parti senza audience, anche se odi ballare su TikTok",
-        }
-    ]
-    out = _parse_promises(raw)
-    assert len(out) == 1
-    assert out[0].pre_headline == ""
-    assert out[0].sub_headline.startswith("Anche")
+@pytest.mark.parametrize(
+    "missing_field",
+    ["pre_headline", "usp_name", "headline", "sub_headline"],
+)
+def test_parse_promises_rejects_whitespace_only_required_field(missing_field):
+    raw = _valid_raw(**{missing_field: "   \t\n  "})
+    assert _parse_promises([raw]) == []
 
 
 @pytest.mark.unit
-def test_parse_promises_skips_blank_headline():
-    raw = [
-        {"pre_headline": "x", "headline": "  ", "sub_headline": "y"},
-        {"pre_headline": "x", "headline": "Valida", "sub_headline": "y"},
-    ]
-    out = _parse_promises(raw)
-    assert len(out) == 1
-    assert out[0].headline == "Valida"
+def test_parse_promises_rejects_when_field_absent_from_dict():
+    raw = _valid_raw()
+    del raw["usp_name"]
+    assert _parse_promises([raw]) == []
 
 
 @pytest.mark.unit
-def test_parse_promises_skips_when_only_headline_no_pre_no_sub():
-    """The trio rule: at least one of pre/sub must be present, never just headline alone."""
-    raw = [
-        {"pre_headline": "", "headline": "Solo headline, senza pre ne sub", "sub_headline": ""},
-        {"pre_headline": "ok", "headline": "Promessa valida", "sub_headline": ""},
+def test_parse_promises_keeps_valid_drops_invalid_in_batch():
+    raws = [
+        _valid_raw(),  # valid
+        _valid_raw(usp_name=""),  # invalid: missing usp
+        _valid_raw(headline="Solo questa rimane valida", usp_name="VINCITORE"),
     ]
-    out = _parse_promises(raw)
-    assert len(out) == 1
-    assert out[0].headline == "Promessa valida"
+    out = _parse_promises(raws)
+    assert len(out) == 2
+    assert out[0].headline.startswith("Riempi")
+    assert out[1].headline == "Solo questa rimane valida"
 
 
 @pytest.mark.unit
 def test_parse_promises_coerces_string_levers_to_tuple():
-    raw = [
-        {
-            "pre_headline": "ok",
-            "headline": "x",
-            "sub_headline": "",
-            "levers": "specificity",
-        }
-    ]
-    out = _parse_promises(raw)
+    raw = _valid_raw(levers="specificity")
+    out = _parse_promises([raw])
     assert out[0].levers == ("specificity",)
 
 
 @pytest.mark.unit
-def test_parse_promises_handles_missing_optional_fields():
-    raw = [{"pre_headline": "ok", "headline": "Solo headline + pre"}]
-    out = _parse_promises(raw)
-    assert out[0].headline == "Solo headline + pre"
-    assert out[0].pre_headline == "ok"
-    assert out[0].sub_headline == ""
+def test_parse_promises_filters_empty_lever_strings():
+    raw = _valid_raw(levers=["valid", "", "  ", "another"])
+    out = _parse_promises([raw])
+    assert out[0].levers == ("valid", "another")
+
+
+@pytest.mark.unit
+def test_parse_promises_handles_missing_optional_metadata():
+    raw = {
+        "pre_headline": "ok",
+        "usp_name": "BRAND",
+        "headline": "Promessa nuda",
+        "sub_headline": "Anti-obiezione",
+    }
+    out = _parse_promises([raw])
+    assert len(out) == 1
     assert out[0].structure == ""
     assert out[0].levers == ()
     assert out[0].rationale == ""
 
 
 @pytest.mark.unit
-def test_parse_promises_filters_empty_lever_strings():
-    raw = [
-        {
-            "pre_headline": "ok",
-            "headline": "x",
-            "sub_headline": "",
-            "levers": ["valid", "", "  ", "another"],
-        }
-    ]
-    out = _parse_promises(raw)
-    assert out[0].levers == ("valid", "another")
-
-
-@pytest.mark.unit
 def test_promise_is_immutable():
     p = Promise(
         pre_headline="a",
+        usp_name="BRAND",
         headline="x",
         sub_headline="b",
         structure="y",
@@ -187,6 +170,21 @@ def test_promise_is_immutable():
     )
     with pytest.raises(Exception):
         p.headline = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.unit
+def test_promise_has_usp_name_field():
+    """Guard against accidentally dropping usp_name from the dataclass."""
+    p = Promise(
+        pre_headline="a",
+        usp_name="BRAND",
+        headline="x",
+        sub_headline="b",
+        structure="",
+        levers=(),
+        rationale="",
+    )
+    assert p.usp_name == "BRAND"
 
 
 # ── _build_user_prompt ────────────────────────────────────────────
@@ -206,6 +204,22 @@ def test_build_user_prompt_includes_required_pieces():
     assert "## Context" in out
     assert "vendo coaching 1-1" in out
     assert "12 headline-promesse" in out
+
+
+@pytest.mark.unit
+def test_build_user_prompt_requires_all_four_layers():
+    """The task instruction should make the 4-layer requirement explicit."""
+    out = _build_user_prompt(
+        context="ctx",
+        references="",
+        target_audience="",
+        brand_voice="",
+        n_headlines=10,
+    )
+    assert "pre_headline" in out
+    assert "usp_name" in out
+    assert "headline" in out
+    assert "sub_headline" in out
 
 
 @pytest.mark.unit
