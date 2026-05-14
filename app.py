@@ -19,10 +19,20 @@ from agent.promise import (
     MAX_HEADLINES,
     MIN_HEADLINES,
     Promise,
+    regenerate_field,
     regenerate_one,
     write_promises,
 )
 from agent.store import BriefRow, BriefStore
+
+
+# Etichette per i bottoni "rigenera campo X"
+FIELD_BUTTONS: list[tuple[str, str, str]] = [
+    ("pre_headline", "PRE", "Rigenera solo la PRE-headline (qualifica del target)"),
+    ("usp_name", "USP", "Rigenera solo il nome U.S.P. (etichetta-marchio)"),
+    ("headline", "HEAD", "Rigenera solo la headline (la promessa)"),
+    ("sub_headline", "SUB", "Rigenera solo la sub-headline (anti-obiezione)"),
+]
 
 
 # ── Config ─────────────────────────────────────────────────────────
@@ -74,6 +84,7 @@ DEFAULT_STATE: dict[str, object] = {
     "loaded_brief_id": None,    # id Supabase del brief attualmente in editing
     "prefill": None,            # dict per pre-popolare i campi del form al rerun
     "info": None,               # messaggio info verde (es. brief salvato)
+    "promise_history": None,    # list[list[Promise]]: storia versioni precedenti per ogni promessa (per undo)
 }
 for k, v in DEFAULT_STATE.items():
     if k not in st.session_state:
@@ -271,12 +282,14 @@ def _load_brief_into_form(row: BriefRow, as_duplicate: bool = False) -> None:
     # Carico anche le promesse pregresse cosi` l'utente le rivede subito
     if row.promises and not as_duplicate:
         st.session_state.promises = [_dict_to_promise(p) for p in row.promises]
+        st.session_state.promise_history = [[] for _ in row.promises]
         st.session_state.last_inputs = {
             k: brief.get(k, "")
             for k in ("context", "references", "target_audience", "brand_voice")
         }
     else:
         st.session_state.promises = None
+        st.session_state.promise_history = None
         st.session_state.last_inputs = None
     # Segnalo a _sidebar di ri-applicare target/voice dal prefill al prossimo run
     # (non posso settare direttamente _sb_target qui: i widget sono gia` instanziati).
@@ -398,6 +411,8 @@ def _input_form(sidebar: dict[str, str]) -> None:
                     extra_instructions=extra_instructions,
                 )
                 st.session_state.promises = promises
+                # Reset history: ogni promessa parte senza versioni precedenti
+                st.session_state.promise_history = [[] for _ in promises]
                 st.session_state.last_inputs = {
                     "context": context,
                     "references": references,
@@ -427,11 +442,51 @@ def _input_form(sidebar: dict[str, str]) -> None:
                 )
 
 
+def _push_history(i: int, snapshot: Promise) -> None:
+    """Salva una versione precedente di promises[i] nella history (per undo)."""
+    if st.session_state.get("promise_history") is None:
+        st.session_state.promise_history = [[] for _ in (st.session_state.promises or [])]
+    h: list[Promise] = st.session_state.promise_history[i]
+    h.append(snapshot)
+    # Cap a 10 versioni per promessa
+    if len(h) > 10:
+        h.pop(0)
+
+
+def _undo_promise(i: int) -> bool:
+    """Pop l'ultima versione e la rimette come corrente. False se nulla da annullare."""
+    hist = st.session_state.get("promise_history")
+    if not hist:
+        return False
+    h = hist[i]
+    if not h:
+        return False
+    st.session_state.promises[i] = h.pop()
+    return True
+
+
+def _persist_promises() -> None:
+    """Aggiorna il record Supabase se siamo in modalita` editing."""
+    if not st.session_state.get("loaded_brief_id"):
+        return
+    store = _store()
+    if not store:
+        return
+    try:
+        store.update(
+            st.session_state.loaded_brief_id,
+            st.session_state.last_inputs or {},
+            [_promise_to_dict(x) for x in st.session_state.promises],
+        )
+    except Exception:
+        pass  # silenzioso: la sessione ha gia` il valore corretto
+
+
 def _output_panel(sidebar: dict[str, str]) -> None:
     promises: list[Promise] = st.session_state.promises
     last = st.session_state.last_inputs or {}
 
-    st.success(f"Generate **{len(promises)}** promesse. Copia quelle che ti servono o rigenera con feedback.")
+    st.success(f"Generate **{len(promises)}** promesse. Copia quelle che ti servono o rigenera per campo.")
 
     cols = st.columns([1, 1, 4])
     if cols[0].button("⬅️ Nuovo brief"):
@@ -480,45 +535,83 @@ def _output_panel(sidebar: dict[str, str]) -> None:
                 with st.expander("Perche dovrebbe funzionare"):
                     st.markdown(p.rationale)
 
-            with st.expander("🔄 Rigenera questa promessa con feedback"):
-                feedback = st.text_area(
-                    "Cosa cambiare?",
-                    placeholder=(
-                        "Es. 'troppo lunga, taglia sotto i 70 caratteri', "
-                        "'usa il pain literale del context invece di parafrasarlo', "
-                        "'sostituisci la garanzia con un numero piu credibile'"
-                    ),
-                    key=f"fb_{i}",
-                    height=80,
-                )
-                if st.button("🪄 Rigenera", key=f"regen_{i}", disabled=not feedback.strip()):
-                    with st.spinner("Rigenerazione in corso…"):
+            # ── Controls: per-field regen + undo + rigenera intera ──────
+            hist_i: list[Promise] = (
+                st.session_state.promise_history[i]
+                if st.session_state.get("promise_history") is not None
+                else []
+            )
+            feedback_key = f"fb_{i}"
+            feedback = st.text_input(
+                "Feedback (opzionale, applicato alla prossima rigenerazione)",
+                placeholder="Es. 'piu` corto', 'usa il pain literal', 'evita la garanzia'",
+                key=feedback_key,
+            )
+            ctrl_cols = st.columns([1, 1, 1, 1, 1, 1.5])
+            # 4 bottoni per-campo
+            for col_idx, (field, label, tooltip) in enumerate(FIELD_BUTTONS):
+                if ctrl_cols[col_idx].button(
+                    f"🔁 {label}",
+                    key=f"regen_{field}_{i}",
+                    help=tooltip,
+                    use_container_width=True,
+                ):
+                    with st.spinner(f"Rigenero {label}…"):
                         try:
-                            new_p = regenerate_one(
+                            new_p = regenerate_field(
                                 api_key=ANTHROPIC_API_KEY,
                                 original=p,
-                                feedback=feedback,
+                                field=field,
+                                feedback=feedback or "",
                                 context=last.get("context", ""),
                                 references=last.get("references", ""),
                                 target_audience=last.get("target_audience", ""),
                                 brand_voice=last.get("brand_voice", ""),
                             )
+                            _push_history(i, p)
                             st.session_state.promises[i] = new_p
-                            # Aggiorna anche il record Supabase con le promesse nuove
-                            if st.session_state.get("loaded_brief_id"):
-                                store = _store()
-                                if store:
-                                    try:
-                                        store.update(
-                                            st.session_state.loaded_brief_id,
-                                            last,
-                                            [_promise_to_dict(x) for x in st.session_state.promises],
-                                        )
-                                    except Exception:
-                                        pass  # silenzioso: la sessione ha gia` il valore
+                            _persist_promises()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Rigenerazione fallita: {e}")
+                            st.error(f"Rigenerazione {label} fallita: {e}")
+            # Undo
+            if ctrl_cols[4].button(
+                "↶ Undo",
+                key=f"undo_{i}",
+                disabled=not hist_i,
+                help=(f"Torna alla versione precedente ({len(hist_i)} disponibili)" if hist_i else "Nessuna versione precedente"),
+                use_container_width=True,
+            ):
+                _undo_promise(i)
+                _persist_promises()
+                st.rerun()
+            # Rigenera intera promessa (vecchio comportamento)
+            if ctrl_cols[5].button(
+                "🔄 Tutta",
+                key=f"regen_all_{i}",
+                disabled=not (feedback or "").strip(),
+                help="Rigenera tutti e 4 i livelli usando il feedback. Richiede feedback non vuoto.",
+                use_container_width=True,
+            ):
+                with st.spinner("Rigenerazione intera…"):
+                    try:
+                        new_p = regenerate_one(
+                            api_key=ANTHROPIC_API_KEY,
+                            original=p,
+                            feedback=feedback,
+                            context=last.get("context", ""),
+                            references=last.get("references", ""),
+                            target_audience=last.get("target_audience", ""),
+                            brand_voice=last.get("brand_voice", ""),
+                        )
+                        _push_history(i, p)
+                        st.session_state.promises[i] = new_p
+                        _persist_promises()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Rigenerazione fallita: {e}")
+            if hist_i:
+                st.caption(f"🕘 {len(hist_i)} versioni precedenti in memoria (undo disponibile).")
 
 
 # ── Render ────────────────────────────────────────────────────────

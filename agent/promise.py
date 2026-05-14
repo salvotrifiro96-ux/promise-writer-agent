@@ -309,3 +309,87 @@ def regenerate_one(
     if not promises:
         raise ValueError("regeneration returned no usable promise")
     return promises[0]
+
+
+# ── Single-field regeneration ────────────────────────────────────────
+FIELD_LABELS = {
+    "pre_headline": "PRE-HEADLINE (qualifica del target)",
+    "usp_name": "USP NAME (etichetta-marchio del metodo)",
+    "headline": "HEADLINE (la promessa nuda con outcome/numeri/tempo)",
+    "sub_headline": "SUB-HEADLINE (anti-obiezione corta)",
+}
+
+
+def regenerate_field(
+    *,
+    api_key: str,
+    original: Promise,
+    field: str,
+    feedback: str = "",
+    context: str,
+    references: str = "",
+    target_audience: str = "",
+    brand_voice: str = "",
+) -> Promise:
+    """Riscrive SOLO un campo della promessa, tenendo gli altri 3 invariati.
+
+    Args:
+        field: uno fra "pre_headline" | "usp_name" | "headline" | "sub_headline"
+        feedback: cosa cambiare. Opzionale (se vuoto = solo "fammene una versione diversa").
+    """
+    if field not in FIELD_LABELS:
+        raise ValueError(f"field invalido: {field}. Usa uno fra {list(FIELD_LABELS)}")
+
+    fixed_block_lines = []
+    for f, label in FIELD_LABELS.items():
+        marker = "[DA RIGENERARE]" if f == field else "[TIENI INVARIATO]"
+        fixed_block_lines.append(f"  {label} {marker}: {getattr(original, f)}")
+    fixed_block = "\n".join(fixed_block_lines)
+
+    fb_line = f"Feedback operatore: {feedback.strip()}\n\n" if feedback.strip() else ""
+
+    instructions = (
+        "Devi riscrivere UNA SOLA sezione della promessa-quaternio.\n\n"
+        f"Promessa attuale (4 livelli):\n{fixed_block}\n"
+        f"  (struttura: {original.structure}; leve: {', '.join(original.levers)})\n\n"
+        f"{fb_line}"
+        f"REGOLE FERREE:\n"
+        f"- Rigenera SOLO il campo `{field}` (contrassegnato [DA RIGENERARE]).\n"
+        f"- Gli altri 3 campi [TIENI INVARIATO] devono restare IDENTICI parola per parola.\n"
+        f"- La nuova versione del campo deve essere coerente con gli altri 3 livelli.\n\n"
+        f"Restituisci un array JSON con UN SOLO elemento (la promessa completa con il "
+        f"nuovo `{field}` e gli altri 3 invariati). Tutti e 4 i livelli obbligatori."
+    )
+    user_prompt = _build_user_prompt(
+        context=context,
+        references=references,
+        target_audience=target_audience,
+        brand_voice=brand_voice,
+        n_headlines=1,
+        extra_instructions=instructions,
+    )
+
+    client = Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=600,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+    promises = _parse_promises(_extract_json_array(text))
+    if not promises:
+        raise ValueError("regeneration returned no usable promise")
+
+    # Difensivo: forza gli altri 3 campi a restare invariati nel caso il modello
+    # avesse modificato qualcosa di non richiesto.
+    new = promises[0]
+    return Promise(
+        pre_headline=(new.pre_headline if field == "pre_headline" else original.pre_headline),
+        usp_name=(new.usp_name if field == "usp_name" else original.usp_name),
+        headline=(new.headline if field == "headline" else original.headline),
+        sub_headline=(new.sub_headline if field == "sub_headline" else original.sub_headline),
+        structure=new.structure or original.structure,
+        levers=new.levers or original.levers,
+        rationale=new.rationale or original.rationale,
+    )
