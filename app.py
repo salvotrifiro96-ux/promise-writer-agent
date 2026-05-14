@@ -154,9 +154,23 @@ def _sidebar() -> dict[str, str]:
             "Streamlit Cloud → Settings → Secrets."
         )
 
+    # Se c'e` un brief appena caricato dall'archivio, ricarico target/voice
+    # dal prefill: cancello le keys dei widget cosi` Streamlit rigenera
+    # i widget col value= dal prefill (Streamlit usa value= solo se la key
+    # non e` ancora in session_state).
+    target_default = st.session_state.get("_sb_target", "")
+    voice_default = st.session_state.get("_sb_voice", "")
+    if st.session_state.get("_consume_sidebar_prefill"):
+        pre = st.session_state.get("prefill") or {}
+        target_default = pre.get("target_audience", "")
+        voice_default = pre.get("brand_voice", "")
+        st.session_state.pop("_sb_target", None)
+        st.session_state.pop("_sb_voice", None)
+        st.session_state._consume_sidebar_prefill = False
+
     target_audience = st.sidebar.text_area(
         "Target audience (1 frase)",
-        value=st.session_state.get("_sb_target", ""),
+        value=target_default,
         placeholder="Es. coach 1-1 che vendono percorsi 1.500-3.000€ a imprenditori 35-55",
         height=80,
         key="_sb_target",
@@ -164,7 +178,7 @@ def _sidebar() -> dict[str, str]:
     )
     brand_voice = st.sidebar.text_area(
         "Brand voice (1 frase)",
-        value=st.session_state.get("_sb_voice", ""),
+        value=voice_default,
         placeholder="Es. diretto, pragmatico, italiano semplice, no anglicismi",
         height=80,
         key="_sb_voice",
@@ -264,9 +278,9 @@ def _load_brief_into_form(row: BriefRow, as_duplicate: bool = False) -> None:
     else:
         st.session_state.promises = None
         st.session_state.last_inputs = None
-    # Aggiorno sidebar default (target/voice) tramite chiavi sb_*
-    st.session_state["_sb_target"] = st.session_state.prefill["target_audience"]
-    st.session_state["_sb_voice"] = st.session_state.prefill["brand_voice"]
+    # Segnalo a _sidebar di ri-applicare target/voice dal prefill al prossimo run
+    # (non posso settare direttamente _sb_target qui: i widget sono gia` instanziati).
+    st.session_state._consume_sidebar_prefill = True
     st.session_state.info = (
         f"Brief `{row.title[:40]}` " + ("duplicato come nuovo." if as_duplicate else "caricato.")
     )
