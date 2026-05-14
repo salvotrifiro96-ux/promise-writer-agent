@@ -13,6 +13,8 @@ import traceback
 import streamlit as st
 from dotenv import load_dotenv
 
+from dataclasses import asdict
+
 from agent.promise import (
     MAX_HEADLINES,
     MIN_HEADLINES,
@@ -20,6 +22,7 @@ from agent.promise import (
     regenerate_one,
     write_promises,
 )
+from agent.store import BriefRow, BriefStore
 
 
 # ── Config ─────────────────────────────────────────────────────────
@@ -68,16 +71,78 @@ DEFAULT_STATE: dict[str, object] = {
     "promises": None,
     "last_inputs": None,
     "error": None,
+    "loaded_brief_id": None,    # id Supabase del brief attualmente in editing
+    "prefill": None,            # dict per pre-popolare i campi del form al rerun
+    "info": None,               # messaggio info verde (es. brief salvato)
 }
 for k, v in DEFAULT_STATE.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 
+# ── Store ──────────────────────────────────────────────────────────
+def _store() -> BriefStore | None:
+    if "_brief_store" not in st.session_state:
+        try:
+            st.session_state._brief_store = BriefStore.from_env()
+        except Exception:
+            st.session_state._brief_store = None
+    return st.session_state._brief_store
+
+
+def _promise_to_dict(p: Promise) -> dict:
+    return {
+        "pre_headline": p.pre_headline,
+        "usp_name": p.usp_name,
+        "headline": p.headline,
+        "sub_headline": p.sub_headline,
+        "structure": p.structure,
+        "levers": list(p.levers or ()),
+        "rationale": p.rationale,
+    }
+
+
+def _dict_to_promise(d: dict) -> Promise:
+    return Promise(
+        pre_headline=d.get("pre_headline", ""),
+        usp_name=d.get("usp_name", ""),
+        headline=d.get("headline", ""),
+        sub_headline=d.get("sub_headline", ""),
+        structure=d.get("structure", ""),
+        levers=tuple(d.get("levers") or ()),
+        rationale=d.get("rationale", ""),
+    )
+
+
 def _show_error_if_any() -> None:
     err = st.session_state.get("error")
     if err:
         st.error(err)
+
+
+def _show_info_if_any() -> None:
+    info = st.session_state.get("info")
+    if info:
+        st.success(info)
+        st.session_state.info = None
+
+
+def _autosave_brief(*, brief: dict, promises: list[Promise]) -> None:
+    """Salva (insert o update) il brief in Supabase. Silenzioso se store non disponibile."""
+    store = _store()
+    if not store:
+        return
+    payload_promises = [_promise_to_dict(p) for p in promises]
+    try:
+        if st.session_state.get("loaded_brief_id"):
+            row = store.update(st.session_state.loaded_brief_id, brief, payload_promises)
+            st.session_state.info = f"Brief aggiornato in archivio (`{row.id[:8]}…`)."
+        else:
+            row = store.insert(brief, payload_promises)
+            st.session_state.loaded_brief_id = row.id
+            st.session_state.info = f"Brief salvato in archivio (`{row.id[:8]}…`)."
+    except Exception as e:
+        st.session_state.info = f"⚠️ Brief generato ma archivio non aggiornato: {e}"
 
 
 # ── Sidebar: defaults you reuse across runs ────────────────────────
@@ -111,10 +176,100 @@ def _sidebar() -> dict[str, str]:
             st.session_state[k] = DEFAULT_STATE[k]
         st.rerun()
 
+    _sidebar_archive()
+
     return {
         "target_audience": (target_audience or "").strip(),
         "brand_voice": (brand_voice or "").strip(),
     }
+
+
+def _sidebar_archive() -> None:
+    """Lista brief precedenti con load/duplicate/delete."""
+    store = _store()
+    st.sidebar.divider()
+    st.sidebar.header("📚 Archivio brief")
+    if not store:
+        st.sidebar.caption(
+            "Archivio disabilitato: mancano `SUPABASE_URL` e `SUPABASE_SECRET_KEY` "
+            "nei secrets. Aggiungile per abilitarlo."
+        )
+        return
+
+    try:
+        rows = store.list_recent(limit=50)
+    except Exception as e:
+        st.sidebar.error(f"Errore archivio: {e}")
+        return
+
+    if not rows:
+        st.sidebar.caption("_Nessun brief salvato ancora._")
+        return
+
+    if st.session_state.loaded_brief_id:
+        st.sidebar.caption(f"📌 Editing brief `{st.session_state.loaded_brief_id[:8]}…`")
+        if st.sidebar.button("🆕 Esci editing (nuovo brief)", use_container_width=True):
+            st.session_state.loaded_brief_id = None
+            st.session_state.promises = None
+            st.session_state.last_inputs = None
+            st.session_state.prefill = None
+            st.rerun()
+
+    for row in rows:
+        with st.sidebar.container(border=True):
+            label = row.title or "(senza titolo)"
+            st.markdown(f"**{label[:60]}**")
+            st.caption(
+                f"{(row.updated_at or row.created_at)[:16].replace('T', ' ')} · "
+                f"{len(row.promises)} promesse"
+            )
+            c1, c2, c3 = st.columns([1, 1, 1])
+            if c1.button("📂", key=f"open_{row.id}", help="Apri / modifica"):
+                _load_brief_into_form(row)
+                st.rerun()
+            if c2.button("📄", key=f"dup_{row.id}", help="Duplica come nuovo brief"):
+                _load_brief_into_form(row, as_duplicate=True)
+                st.rerun()
+            if c3.button("🗑️", key=f"del_{row.id}", help="Elimina"):
+                try:
+                    store.delete(row.id)
+                    if st.session_state.loaded_brief_id == row.id:
+                        st.session_state.loaded_brief_id = None
+                        st.session_state.promises = None
+                        st.session_state.last_inputs = None
+                    st.session_state.info = f"Brief `{label[:40]}…` eliminato."
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Delete fallito: {e}")
+
+
+def _load_brief_into_form(row: BriefRow, as_duplicate: bool = False) -> None:
+    brief = row.brief or {}
+    st.session_state.loaded_brief_id = None if as_duplicate else row.id
+    st.session_state.prefill = {
+        "context": brief.get("context", ""),
+        "references": brief.get("references", ""),
+        "target_audience": brief.get("target_audience", ""),
+        "brand_voice": brief.get("brand_voice", ""),
+        "n_headlines": int(brief.get("n_headlines", 10) or 10),
+        "extra_instructions": brief.get("extra_instructions", ""),
+    }
+    # Carico anche le promesse pregresse cosi` l'utente le rivede subito
+    if row.promises and not as_duplicate:
+        st.session_state.promises = [_dict_to_promise(p) for p in row.promises]
+        st.session_state.last_inputs = {
+            k: brief.get(k, "")
+            for k in ("context", "references", "target_audience", "brand_voice")
+        }
+    else:
+        st.session_state.promises = None
+        st.session_state.last_inputs = None
+    # Aggiorno sidebar default (target/voice) tramite chiavi sb_*
+    st.session_state["_sb_target"] = st.session_state.prefill["target_audience"]
+    st.session_state["_sb_voice"] = st.session_state.prefill["brand_voice"]
+    st.session_state.info = (
+        f"Brief `{row.title[:40]}` " + ("duplicato come nuovo." if as_duplicate else "caricato.")
+    )
 
 
 # ── Main page ──────────────────────────────────────────────────────
@@ -138,10 +293,19 @@ def _main(sidebar: dict[str, str]) -> None:
 
 
 def _input_form(sidebar: dict[str, str]) -> None:
+    pre = st.session_state.get("prefill") or {}
+    is_editing = bool(st.session_state.get("loaded_brief_id"))
+    if is_editing:
+        st.info(
+            f"📌 Stai modificando un brief esistente (`{st.session_state.loaded_brief_id[:8]}…`). "
+            "Al prossimo **Genera promesse** verra` aggiornato in archivio."
+        )
+    elif pre:
+        st.info("📄 Brief caricato dall'archivio come **nuovo** (duplicato). Verra` creato un nuovo record.")
     with st.form("promise_form"):
         context = st.text_area(
             "📥 Context — tutto quello che sai sull'offerta, target e prove",
-            value="",
+            value=pre.get("context", ""),
             height=320,
             placeholder=(
                 "Carica qui TUTTO quello che hai. Piu dai, meglio scrive. Mappa di cosa "
@@ -173,7 +337,7 @@ def _input_form(sidebar: dict[str, str]) -> None:
         )
         references = st.text_area(
             "📚 Reference — strutture o esempi headline che il copywriter deve studiare",
-            value="",
+            value=pre.get("references", ""),
             height=180,
             placeholder=(
                 "Opzionale. Esempi:\n"
@@ -190,12 +354,12 @@ def _input_form(sidebar: dict[str, str]) -> None:
             "Quante promesse?",
             min_value=MIN_HEADLINES,
             max_value=MAX_HEADLINES,
-            value=10,
+            value=int(pre.get("n_headlines", 10) or 10),
             help=f"Default {MIN_HEADLINES}. Sopra le 15 il modello varia di piu ma puo ripetersi.",
         )
         extra_instructions = cols[2].text_input(
             "Indicazioni extra (opzionale)",
-            value="",
+            value=pre.get("extra_instructions", ""),
             placeholder="Es. 'evita garanzie monetarie', 'mantieni sotto i 90 caratteri'",
         )
 
@@ -226,6 +390,20 @@ def _input_form(sidebar: dict[str, str]) -> None:
                     "target_audience": sidebar["target_audience"],
                     "brand_voice": sidebar["brand_voice"],
                 }
+                # Auto-save in archivio Supabase (se configurato).
+                _autosave_brief(
+                    brief={
+                        "context": context,
+                        "references": references,
+                        "target_audience": sidebar["target_audience"],
+                        "brand_voice": sidebar["brand_voice"],
+                        "n_headlines": n_headlines,
+                        "extra_instructions": extra_instructions,
+                    },
+                    promises=promises,
+                )
+                # Il prefill ha finito il suo lavoro
+                st.session_state.prefill = None
                 st.rerun()
             except ValueError as e:
                 st.session_state.error = f"Errore: {e}"
@@ -245,8 +423,17 @@ def _output_panel(sidebar: dict[str, str]) -> None:
     if cols[0].button("⬅️ Nuovo brief"):
         st.session_state.promises = None
         st.session_state.last_inputs = None
+        st.session_state.loaded_brief_id = None
+        st.session_state.prefill = None
         st.rerun()
     if cols[1].button("🔁 Rigenera tutte"):
+        # mantieni il prefill cosi` il form ricarica gli stessi input
+        st.session_state.prefill = {
+            "context": last.get("context", ""),
+            "references": last.get("references", ""),
+            "target_audience": last.get("target_audience", ""),
+            "brand_voice": last.get("brand_voice", ""),
+        }
         st.session_state.promises = None
         st.rerun()
 
@@ -303,6 +490,18 @@ def _output_panel(sidebar: dict[str, str]) -> None:
                                 brand_voice=last.get("brand_voice", ""),
                             )
                             st.session_state.promises[i] = new_p
+                            # Aggiorna anche il record Supabase con le promesse nuove
+                            if st.session_state.get("loaded_brief_id"):
+                                store = _store()
+                                if store:
+                                    try:
+                                        store.update(
+                                            st.session_state.loaded_brief_id,
+                                            last,
+                                            [_promise_to_dict(x) for x in st.session_state.promises],
+                                        )
+                                    except Exception:
+                                        pass  # silenzioso: la sessione ha gia` il valore
                             st.rerun()
                         except Exception as e:
                             st.error(f"Rigenerazione fallita: {e}")
@@ -310,5 +509,6 @@ def _output_panel(sidebar: dict[str, str]) -> None:
 
 # ── Render ────────────────────────────────────────────────────────
 sidebar_state = _sidebar()
+_show_info_if_any()
 _show_error_if_any()
 _main(sidebar_state)
