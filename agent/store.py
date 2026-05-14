@@ -31,6 +31,7 @@ class BriefRow:
     promises: list[dict[str, Any]]
     created_at: str
     updated_at: str
+    project_id: str | None = None
 
 
 class BriefStore:
@@ -90,15 +91,18 @@ class BriefStore:
             promises=row.get("promises", []) or [],
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
+            project_id=row.get("project_id"),
         )
 
     # ── CRUD ──────────────────────────────────────────────────────────
-    def insert(self, brief: dict[str, Any], promises: list[dict[str, Any]]) -> BriefRow:
-        row = {
+    def insert(self, brief: dict[str, Any], promises: list[dict[str, Any]], project_id: str | None = None) -> BriefRow:
+        row: dict[str, Any] = {
             "title": self._derive_title(brief),
             "brief": brief,
             "promises": promises,
         }
+        if project_id:
+            row["project_id"] = project_id
         r = requests.post(
             f"{self._rest}/{TABLE}",
             data=json.dumps(row),
@@ -158,6 +162,46 @@ class BriefStore:
             raise RuntimeError(f"List briefs fallito {r.status_code}: {r.text[:300]}")
         rows = r.json() or []
         return [self._row_to_brief(row) for row in rows]
+
+    # ── Cross-app: approva una promessa per un progetto orchestrator ──
+    def set_selected_promise_for_project(
+        self, project_id: str, promise: dict[str, Any]
+    ) -> bool:
+        """Aggiorna orchestrator_projects.selected_promise e segna l'agent
+        'promise' come completed nel project_agents. Ritorna True se ok."""
+        # 1. update orchestrator_projects.selected_promise
+        r = requests.patch(
+            f"{self._rest}/orchestrator_projects",
+            params={"id": f"eq.{project_id}"},
+            data=json.dumps({"selected_promise": promise, "updated_at": "now()"}),
+            headers=self._h_write,
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Update project failed {r.status_code}: {r.text[:200]}")
+        # 2. mark agent 'promise' as completed
+        r2 = requests.patch(
+            f"{self._rest}/orchestrator_project_agents",
+            params={"project_id": f"eq.{project_id}", "agent_slug": "eq.promise"},
+            data=json.dumps({"status": "completed", "updated_at": "now()"}),
+            headers=self._h_write,
+            timeout=30,
+        )
+        if r2.status_code >= 400:
+            raise RuntimeError(f"Update agent failed {r2.status_code}: {r2.text[:200]}")
+        return True
+
+    def list_projects_for_link(self) -> list[dict[str, Any]]:
+        """Lista progetti orchestrator (id, name) per UI di scelta."""
+        r = requests.get(
+            f"{self._rest}/orchestrator_projects",
+            params={"select": "id,name,status", "order": "updated_at.desc", "limit": "100"},
+            headers=self._h_read,
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"List projects failed {r.status_code}: {r.text[:200]}")
+        return r.json() or []
 
     def get(self, brief_id: str) -> BriefRow | None:
         r = requests.get(

@@ -82,6 +82,7 @@ DEFAULT_STATE: dict[str, object] = {
     "last_inputs": None,
     "error": None,
     "loaded_brief_id": None,    # id Supabase del brief attualmente in editing
+    "loaded_brief_project_id": None,  # se il brief e` linkato a un progetto orchestrator
     "prefill": None,            # dict per pre-popolare i campi del form al rerun
     "info": None,               # messaggio info verde (es. brief salvato)
     "promise_history": None,    # list[list[Promise]]: storia versioni precedenti per ogni promessa (per undo)
@@ -235,6 +236,7 @@ def _sidebar_archive() -> None:
         st.sidebar.caption(f"📌 Editing brief `{st.session_state.loaded_brief_id[:8]}…`")
         if st.sidebar.button("🆕 Esci editing (nuovo brief)", use_container_width=True):
             st.session_state.loaded_brief_id = None
+            st.session_state.loaded_brief_project_id = None
             st.session_state.promises = None
             st.session_state.last_inputs = None
             st.session_state.prefill = None
@@ -243,10 +245,12 @@ def _sidebar_archive() -> None:
     for row in rows:
         with st.sidebar.container(border=True):
             label = row.title or "(senza titolo)"
-            st.markdown(f"**{label[:60]}**")
+            link_badge = " 🔗" if row.project_id else ""
+            st.markdown(f"**{label[:58]}**{link_badge}")
             st.caption(
                 f"{(row.updated_at or row.created_at)[:16].replace('T', ' ')} · "
                 f"{len(row.promises)} promesse"
+                + (f" · prog `{row.project_id[:8]}…`" if row.project_id else "")
             )
             c1, c2, c3 = st.columns([1, 1, 1])
             if c1.button("📂", key=f"open_{row.id}", help="Apri / modifica"):
@@ -271,6 +275,7 @@ def _sidebar_archive() -> None:
 def _load_brief_into_form(row: BriefRow, as_duplicate: bool = False) -> None:
     brief = row.brief or {}
     st.session_state.loaded_brief_id = None if as_duplicate else row.id
+    st.session_state.loaded_brief_project_id = None if as_duplicate else row.project_id
     st.session_state.prefill = {
         "context": brief.get("context", ""),
         "references": brief.get("references", ""),
@@ -508,6 +513,15 @@ def _output_panel(sidebar: dict[str, str]) -> None:
 
     st.divider()
 
+    project_id = st.session_state.get("loaded_brief_project_id")
+    if project_id:
+        st.info(
+            f"📌 Questo brief e` collegato al progetto orchestrator "
+            f"`{project_id[:8]}…`. Su ogni promessa puoi cliccare "
+            f"**🎯 Approva per progetto** per renderla la promessa ufficiale "
+            f"di quel progetto."
+        )
+
     for i, p in enumerate(promises):
         with st.container(border=True):
             st.markdown(f"**Promessa #{i + 1}**")
@@ -524,6 +538,30 @@ def _output_panel(sidebar: dict[str, str]) -> None:
             st.markdown(f"### {p.headline}")
             if p.sub_headline:
                 st.markdown(f"_{p.sub_headline}_")
+
+            # Cross-app: approva questa promessa per il progetto orchestrator
+            if project_id:
+                if st.button(
+                    "🎯 Approva per progetto",
+                    key=f"approve_proj_{i}",
+                    help="Imposta come promessa ufficiale del progetto orchestrator",
+                ):
+                    store = _store()
+                    if not store:
+                        st.error("Supabase non configurato")
+                    else:
+                        try:
+                            store.set_selected_promise_for_project(
+                                project_id, _promise_to_dict(p)
+                            )
+                            st.success(
+                                f"Promessa #{i+1} impostata come ufficiale del "
+                                f"progetto `{project_id[:8]}…`. Lo stato del "
+                                f"Promise Writer nell'orchestrator e` ora "
+                                f"`completed`. Gli altri agenti possono procedere."
+                            )
+                        except Exception as e:
+                            st.error(f"Approvazione fallita: {e}")
             st.markdown("")  # spacing
             meta_cols = st.columns([2, 3])
             with meta_cols[0]:
